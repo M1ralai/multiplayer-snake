@@ -1,136 +1,66 @@
-# 🐍 MSNAKE — Multiplayer P2P Snake Game
+# Multiplayer Snake
 
-**MSNAKE**, C++20 ile sıfırdan geliştirilmiş; **Hearts of Iron IV (HOI4) tarzı Deterministik Lockstep (Tick-based)** simülasyon motoruna sahip, **P2P UDP** tabanlı ve **titreşimsiz (flicker-free)** terminal çok oyunculu yılan oyunudur.
+A terminal-based peer-to-peer Snake prototype written in C++20. It explores a small binary UDP protocol, room-code encoding, network discovery helpers, concurrent input/network loops, and a tick-based game simulation.
 
----
+## What this project demonstrates
 
-## 🌟 Öne Çıkan Özellikler
+- A POSIX UDP socket wrapper with non-blocking receive behavior
+- Packed packets for join, accept/refuse, start, input, ping/pong, and disconnect messages
+- An eight-character room code that encodes an IPv4 address and UDP port
+- STUN binding-response parsing based on RFC 5389
+- UPnP discovery and SOAP requests for optional port forwarding
+- Separate input, network, and simulation threads with shared-state synchronization
+- Automated checks for room-code, connection, STUN, and UPnP components
 
-- **🎯 Deterministik Lockstep Motoru (HOI4 Mantığı):** Oyun 0.25 saniyede bir (4 TPS) sabit zamanlı döngüyle ilerler. Her iki bilgisayarda da elma konumları ve çarpışmalar aynı rastgelelik tohumu (`seed`) ile birebir eşzamanlı hesaplanır.
-- **⚡ Titreşimsiz (Flicker-Free) Çizim:** ANSI Cursor Repositioning (`\033[H`) ve tek bir atomik `write()` syscall'u ile ekran yırtılması veya yanıp sönme olmadan akıcı render.
-- **🌐 8 Karakterlik Akıllı Oda Kodları:** IP ve Port bilgisi 6 bayta sıkıştırılıp *Among Us* tarzı `XXXX-YYYY` kodlarına dönüştürülür (sıfır merkezi sunucu maliyeti).
-- **📡 P2P UDP Ağ Protokolü:** Düşük gecikmeli, binary paket serileştirmeli (`#pragma pack(1)`) saf eşler arası (Peer-to-Peer) haberleşme.
-- **🌍 STUN (RFC 5389) & UPnP Desteği:** Google STUN sunucuları üzerinden genel (Public) IP tespiti ve otomatik modem yönlendirme altyapısı.
-- **🧪 Kapsamlı Test Paketi:** Oda kodları, UDP soketleri, non-blocking I/O ve STUN protokolü için birim testler.
+## Architecture
 
----
+The host binds a UDP socket, advertises an address as a room code, and handles a versioned join handshake. After the host accepts a peer, both processes exchange direction packets while their local simulations advance on a fixed tick.
 
-## 🏛️ Mimari ve Çalışma Mantığı
-
-```mermaid
-graph TD
-    User([Klavye / Input Thread]) -->|Anlık Yön Paketlemesi| NetSender[UDP Sender]
-    NetSender -->|P2P UDP| Peer[Diğer Oyuncu]
-    
-    Peer -->|UDP Input Packet| NetReceiver[Network Receiver Thread]
-    NetReceiver -->|Girdi Tamponu| TickEngine[Tick Engine - 250ms]
-    User -->|Yerel Girdi| TickEngine
-    
-    TickEngine -->|Deterministik Update| WorldState[Game State]
-    TickEngine -->|Her Olay Sonrası Tetikle| Renderer[Atomic Buffer Renderer]
-    Renderer -->|Tek Syscall| Terminal[Terminal Ekranı]
-```
-
-### 1. 48-Bit Oda Kodu Sıkıştırma (Room Code)
-Bir oyuncunun diğerine bağlanması için gereken tüm bilgi:
-- **4 Bayt:** IPv4 Adresi (örn: `78.185.121.204`)
-- **2 Bayt:** Port Numarası (örn: `8080`)
-
-Bu 6 bayt (48 bit), URL-safe Base64 tablosu ile tam **8 karakterlik** bir koda dönüştürülür:
 ```text
-78.185.121.204:8080  --->  wKgB-Ih-Q
+keyboard input -> input thread ----\
+                                    -> shared directions -> tick loop -> render
+UDP peer ------> network thread ---/
 ```
 
----
+Both peers receive a common random seed in the join flow so apple placement can follow the same sequence. Input packets include a tick number, but the current implementation applies received directions directly; it does not yet buffer, acknowledge, replay, or resynchronize inputs as a complete lockstep protocol would.
 
-## 🌐 Farklı Şehirlerden Oynamak (Port Yönlendirme Rehberi)
+### Room codes and NAT helpers
 
-Farklı internet ağlarındaki iki arkadaşın birbirine doğrudan bağlanabilmesi için odayı kuracak olan kişinin (Host) modeminde **Port Yönlendirme (Port Forwarding)** ayarı yapması gerekir.
+`RoomCode` converts a four-byte IPv4 address plus a two-byte port into an eight-character URL-safe representation and decodes it back to a peer address. The STUN client parses mapped-address attributes to discover a public endpoint. The UPnP helper uses SSDP and SOAP to request a UDP mapping when the router supports the expected interface.
 
-### Modem Ayar Tablosu (Örnek):
+## Build and run
 
-1. Tarayıcıdan modem arayüzüne girin (`http://192.168.1.1`).
-2. **Port Yönlendirme / Port Forwarding** menüsüne gidin ve yeni bir kural ekleyin:
+Requirements: a C++20 compiler, Make, and a POSIX environment. The Makefile defaults to `clang++`.
 
-| Alan Adı | Girilecek Değer | Açıklama |
-| :--- | :--- | :--- |
-| **Hizmet Adı** | `msnake` | Kural için açıklayıcı isim |
-| **WAN Arayüzü** | `Internet_DSL` / `Internet_ETH` | Aktif internet hattınız |
-| **Sunucu IP Adresi** | `192.168.1.37` *(Mac'inizin Yerel IP'si)* | `ifconfig` ile bulunan yerel IP |
-| **Başlangıç Portu** | `8080` | Dış dünyadan gelen port |
-| **Bitiş Portu** | `8080` | Dış port bitişi |
-| **Çeviri Başlangıç Portu** | `8080` | Bilgisayarınızdaki dinlenen port |
-| **Çeviri Bitiş Portu** | `8080` | Hedef port bitişi |
-| **Protokol** | `UDP` veya `TCP/UDP` | UDP seçilmelidir |
-
-> 💡 **Nasıl Oynanır?**
-> 1. Host oyunu açar -> `[1] Oda Kur` -> `[2] Internet` seçer.
-> 2. Ekranda çıkan **Oda Kodunu** arkadaşına gönderir.
-> 3. Arkadaşı oyunu açar -> `[2] Odaya Katıl` seçip kodu girer.
-> 4. Bağlantı anında kurulur ve oyun başlar!
-
----
-
-## 🎮 Kontroller
-
-| Tuş | Eylem |
-| :--- | :--- |
-| **W / Yukarı Ok** | Yukarı Dön |
-| **S / Aşağı Ok** | Aşağı Dön |
-| **A / Sol Ok** | Sola Dön |
-| **D / Sağ Ok** | Sağa Dön |
-| **Q** | Oyundan Çık |
-
----
-
-## 🛠️ Derleme ve Çalıştırma
-
-### Gereksinimler
-- Clang++ veya GCC (C++20 desteği ile)
-- Make
-- macOS veya Linux
-
-### Derleme Komutları
 ```bash
-# Projeyi derle
 make
-
-# Birim testlerini çalıştır
-make test
-
-# Oyunu başlat
 make run
-# veya
-./bin/out
 ```
 
----
+Run the test executable with:
 
-## 📁 Proje Dosya Yapısı
-
-```text
-msnake/
-├── include/
-│   ├── game/
-│   │   ├── canvas.hpp       # Titreşimsiz ANSI terminal çizim matrisi
-│   │   ├── game.hpp         # Multi-threaded oyun motoru & lobi
-│   │   └── snake.hpp        # Vektör tabanlı yılan veri yapısı & hareket
-│   ├── network/
-│   │   ├── connection.hpp   # POSIX UDP socket sarmalayıcısı
-│   │   ├── packet.hpp       # Binary ağ paketleri protokolü
-│   │   ├── room_code.hpp    # 48-bit Base64 oda kodu encoder/decoder
-│   │   ├── stun.hpp         # Google STUN (RFC 5389) istemcisi
-│   │   └── upnp.hpp         # SSDP & SOAP port yönlendirme
-│   └── utils/
-│       ├── thread_safe_queue.hpp # Generic thread-safe event kuyruğu
-│       └── utils.hpp        # Point / Vec2 matematik struct'ı
-├── lib/                     # CPP kaynak dosyaları
-├── tests/                   # Otomatik birim testleri
-├── makefile                 # Modüler derleme kuralları
-└── README.md                # Dokümantasyon
+```bash
+make test
 ```
 
----
+The program presents host/join choices in the terminal. Hosts share the generated room code; joining peers decode it and initiate the UDP handshake.
 
-## 📄 Lisans
-MIT License. Dilediğiniz gibi geliştirebilir, fork'layabilir ve arkadaşlarınızla oynayabilirsiniz!
+## Controls
+
+| Key | Action |
+| --- | --- |
+| `W` or Up | Move up |
+| `S` or Down | Move down |
+| `A` or Left | Move left |
+| `D` or Right | Move right |
+| `Q` | Quit |
+
+## Limitations
+
+- UDP delivery is unreliable; the protocol has no retransmission, sequencing window, or state recovery.
+- Tick values are transmitted but a full deterministic lockstep/input-delay implementation is not present.
+- Raw packed C++ structs are sent on the wire, so ABI, endianness, and cross-platform compatibility are not defined.
+- STUN discovers a public endpoint but the project does not implement general NAT hole punching or a relay fallback.
+- UPnP support depends on router behavior and assumes a limited control-path shape.
+- Networking is IPv4-only, and compiler/platform portability is still incomplete.
+- STUN and UPnP tests depend on the local network and may be skipped when those services are unavailable.
